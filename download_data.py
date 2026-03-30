@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 from pathlib import Path
 
-def get_cached_yfinance_data(ticker, period='6y', interval='1d'):
+def get_cached_yfinance_data(ticker, period='10y', interval='1d'):
     """
     Downloads data from yfinance or loads it from a local Parquet cache.
     """
@@ -28,5 +28,5 @@ def get_cached_yfinance_data(ticker, period='6y', interval='1d'):
 
 
 if __name__ == "__main__":
-    df = get_cached_yfinance_data('XAUUSD=X')
+    df = get_cached_yfinance_data('GC=F')
     print(df.tail())
