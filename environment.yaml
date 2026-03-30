@@ -1,0 +1,35 @@
+name: market-regime
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Versi Python yang stabil untuk Data Science
+  - python=3.10
+  
+  # Core Data Manipulation & Math
+  - numpy
+  - pandas
+  - scipy
+  
+  # Machine Learning & Stats
+  - scikit-learn
+  - statsmodels
+  
+  # Visualization
+  - matplotlib
+  - seaborn
+  - plotly
+  
+  # Jupyter Environment untuk eksperimen
+  - jupyterlab
+  - ipykernel
+  
+  # Manajemen paket via pip di dalam conda
+  - pip
+  - pip:
+    # Model HMM spesifik
+    - hmmlearn
+    # Ekstraksi data pasar (Yahoo Finance)
+    - yfinance
+    # Pustaka untuk indikator teknikal (opsional, sangat berguna untuk feature engineering)
+    - ta

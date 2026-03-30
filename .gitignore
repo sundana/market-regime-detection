@@ -1,0 +1,60 @@
+# ==========================================
+# Python & Compiled Files
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ==========================================
+# Jupyter Notebook
+# ==========================================
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# ==========================================
+# Data & Database (Sangat Penting!)
+# ==========================================
+# Jangan pernah mengunggah data mentah atau hasil unduhan yfinance ke Git
+data/
+*.csv
+*.tsv
+*.dat
+*.parquet
+*.sqlite
+*.db
+
+# ==========================================
+# Machine Learning Models
+# ==========================================
+# Abaikan model HMM/GMM yang sudah disimpan
+models/
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.pt
+*.pth
+
+# ==========================================
+# Environments & Secrets
+# ==========================================
+.env
+.venv
+env/
+venv/
+ENV/
+*.secret
+
+# ==========================================
+# IDEs & OS Specific Files
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
