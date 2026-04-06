@@ -24,6 +24,7 @@ data/
 *.parquet
 *.sqlite
 *.db
+results/
 
 # ==========================================
 # Machine Learning Models
