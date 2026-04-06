@@ -17,6 +17,7 @@ def load_tick_data(data_path):
     
     print(f"Total file yang berhasil dimuat: {len(data_dict)} tahun")
     
+    return data_dict
 
 if __name__ == "__main__":
     file_path = "C:\\Users\\USER\\Documents\\Works\\NXVEST\\market-regime-detection\\data\\xauusd"
