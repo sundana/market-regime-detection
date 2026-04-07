@@ -1,20 +1,30 @@
 import numpy as np
 import pandas as pd
-import ta
 
 
-def engineer_ohlc_features(df, vol_window=21, sma_window=50, rsi_window=14):
-    """
-    Takes an OHLC dataframe and generates stationary features for regime detection.
-    """
-    print(f"Engineering features: Volatility({vol_window}), SMA({sma_window}), RSI({rsi_window})...")
-    data = df.copy()
-    data['Log_Return'] = np.log(data['Close'] / data['Close'].shift(1))
-    data['Volatility'] = data['Log_Return'].rolling(window=vol_window).std() * np.sqrt(252)
-    data['SMA'] = data['Close'].rolling(window=sma_window).mean()
-    data['SMA_Distance'] = (data['Close'] / data['SMA']) - 1
-    data['RSI'] = ta.momentum.RSIIndicator(close=data['Close'], window=rsi_window).rsi()
-    data = data.drop(columns=['SMA'])
-    data_clean = data.dropna()
-    print(f"Done. Output shape: {data_clean.shape}")
-    return data_clean
+def calculate_ohlcv(df, freq='1h'):
+    df_copy = df.copy()
+    df_copy['mid_price'] = (df_copy['bid'] + df_copy['ask']) / 2
+    df_copy.set_index('timestamp', inplace=True)
+
+    ohlcv = df_copy['mid_price'].resample(freq).ohlc().rename(columns={
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price'
+    })
+
+    volume = df_copy.groupby(pd.Grouper(freq=freq)).size()
+    ohlcv['volume'] = volume
+
+    ohlcv.reset_index(inplace=True)
+
+    return ohlcv
+
+
+
+def calculate_log_return(df):
+    df_copy = df.copy()
+    df_copy['log_return'] = np.log(df_copy['close_price'] / df_copy['close_price'].shift(2))
+    df_copy.dropna(inplace=True)
+    return df_copy

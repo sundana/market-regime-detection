@@ -29,8 +29,11 @@ results/
 # ==========================================
 # Machine Learning Models
 # ==========================================
-# Abaikan model HMM/GMM yang sudah disimpan
-models/
+# Abaikan artefak model, tetapi tetap simpan source code pipeline
+models/*
+!models/__init__.py
+!models/regime_detection/
+!models/regime_detection/*.py
 *.pkl
 *.joblib
 *.h5
