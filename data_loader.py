@@ -19,6 +19,24 @@ def load_tick_data(data_path):
     
     return data_dict
 
+
+
+def preprocess_tick_data(data_ticks: dict):
+    for year, df in data_ticks.items():
+        df.columns = ['timestamp', 'bid', 'ask']
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['bid'] = pd.to_numeric(df['bid'])
+        df['ask'] = pd.to_numeric(df['ask'])
+
+        df.sort_values('timestamp', inplace=True)
+        df.reset_index(drop=True, inplace=True)
+        
+        print(f"Preprocessing {year} selesai")
+        return df
+
+
+
 if __name__ == "__main__":
     file_path = "C:\\Users\\USER\\Documents\\Works\\NXVEST\\market-regime-detection\\data\\xauusd"
-    load_tick_data(file_path)
+    ticks = load_tick_data(file_path)
+    preprocess_tick_data(ticks)
