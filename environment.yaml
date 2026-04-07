@@ -9,6 +9,7 @@ dependencies:
   # Core Data Manipulation & Math
   - numpy
   - pandas
+  - numexpr>=2.10.2
   - scipy
   
   # Machine Learning & Stats

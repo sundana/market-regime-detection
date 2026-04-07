@@ -72,6 +72,30 @@ Fast smoke test (use latest bars only):
 python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --states 3 --train-ratio 0.7
 ```
 
+HMM auto-tuning (multi-state, covariance, iteration, and seed search):
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --states 3 --train-ratio 0.7 --hmm-auto-tune
+```
+
+Custom HMM tuning grid:
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --states 3 --train-ratio 0.7 --hmm-auto-tune --hmm-state-grid 2,3,4 --hmm-covariance-grid diag,full --hmm-iter-grid 200,400,600 --hmm-seed-grid 42,53,65 --hmm-tune-train-ratio 0.8
+```
+
+Load pre-trained models (evaluation without retraining):
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --train-ratio 0.7 --load-models-from results/regime_detection/xauusd_1h_YYYYMMDD_HHMMSS
+```
+
+Optional: do not save detector artifacts during training:
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --no-save-models
+```
+
 ## Output Artifacts
 
 Each run writes to:
@@ -85,6 +109,8 @@ Generated files:
 - `<model>/<model>_labels.csv`
 - `<model>/<model>_state_summary.csv`
 - `<model>/<model>_candlestick_regime.html`
+- `<model>/<model>_detector.pkl` (saved trained detector, unless `--no-save-models` is used)
+- `hmm/hmm_tuning_leaderboard.csv` (only when `--hmm-auto-tune` is enabled)
 
 ## Evaluation Metrics
 
@@ -102,3 +128,5 @@ Composite model ranking is saved in `leaderboard.csv` via `composite_score`.
 
 - When `--max-bars` is used, feature loading uses the latest yearly parquet file to speed up experiments.
 - Output charts are interactive HTML (Plotly), optimized for quick inspection of regime labeling clarity on candles.
+- HMM auto-tuning uses an internal time-based split inside training data to choose the best HMM configuration before final test evaluation.
+- `--load-models-from` expects detector files (`*_detector.pkl`) inside each model subfolder and skips model fitting.

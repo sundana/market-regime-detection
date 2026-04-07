@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import pickle
+
+# On Windows + MKL, scikit-learn may warn about KMeans memory leak if thread count is too high.
+# Set thread caps before numerical libraries are imported.
+if os.name == "nt":
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import numpy as np
 from hmmlearn.hmm import GaussianHMM
@@ -28,6 +37,24 @@ class BaseDetector:
 
     def predict(self, x_input: np.ndarray) -> np.ndarray:
         raise NotImplementedError
+
+    def save(self, model_path: str | Path) -> None:
+        path = Path(model_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as f:
+            pickle.dump(self, f)
+
+    @classmethod
+    def load(cls, model_path: str | Path) -> "BaseDetector":
+        path = Path(model_path)
+        with path.open("rb") as f:
+            loaded = pickle.load(f)
+
+        if not isinstance(loaded, BaseDetector):
+            raise TypeError(f"File does not contain a valid detector: {path}")
+        if cls is not BaseDetector and not isinstance(loaded, cls):
+            raise TypeError(f"Loaded detector type mismatch for {path}: expected {cls.__name__}")
+        return loaded
 
 
 class HMMDetector(BaseDetector):
