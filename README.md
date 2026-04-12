@@ -15,6 +15,7 @@ The project now includes:
 2. Preprocess and aggregate to OHLCV (`1h` by default).
 3. Build regime features:
 	- `return_1`
+	- `rolling_dev_return_14`
 	- `volatility_24`
 	- `volatility_72`
 	- `range_ratio`
@@ -96,6 +97,18 @@ Optional: do not save detector artifacts during training:
 python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --no-save-models
 ```
 
+Optional: skip HTML chart rendering for faster runs:
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --no-charts
+```
+
+Optional: walk-forward inference on test set (hour-by-hour):
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --train-ratio 0.7 --rolling-window 120 --rolling-step 1
+```
+
 ## Output Artifacts
 
 Each run writes to:
@@ -126,7 +139,12 @@ Composite model ranking is saved in `leaderboard.csv` via `composite_score`.
 
 ## Notes
 
-- When `--max-bars` is used, feature loading uses the latest yearly parquet file to speed up experiments.
+- When `--max-bars` is used, feature loading uses full available history, then keeps only the latest N feature bars.
 - Output charts are interactive HTML (Plotly), optimized for quick inspection of regime labeling clarity on candles.
 - HMM auto-tuning uses an internal time-based split inside training data to choose the best HMM configuration before final test evaluation.
 - `--load-models-from` expects detector files (`*_detector.pkl`) inside each model subfolder and skips model fitting.
+- Runtime logs now include stage-based progress + ETA for data preparation, HMM tuning, and model training/evaluation.
+- Stage 4 now prints per-model substeps so long operations (especially chart rendering) remain visible in terminal output.
+- Test inference uses walk-forward mode: each test bar is predicted independently from a trailing context window (`--rolling-window`) with `--rolling-step=1`.
+- Training now prints convergence diagnostics per model (HMM, GMM, KMeans), with automatic warning lines if convergence is not achieved.
+- `run_summary.csv` now stores per-model convergence fields such as converged flag, iteration count, max iteration, and warning message.
