@@ -39,6 +39,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-bars", type=int, default=None, help="Use only latest N bars for faster experiments.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
+        "--rolling-window",
+        type=int,
+        default=120,
+        help="Walk-forward context window size for out-of-sample state prediction.",
+    )
+    parser.add_argument(
+        "--rolling-step",
+        type=int,
+        default=1,
+        help="Walk-forward step size. Must be 1 to avoid look-ahead.",
+    )
+    parser.add_argument(
         "--load-models-from",
         type=str,
         default=None,
@@ -48,6 +60,11 @@ def parse_args() -> argparse.Namespace:
         "--no-save-models",
         action="store_true",
         help="Do not save detector artifacts after training.",
+    )
+    parser.add_argument(
+        "--no-charts",
+        action="store_true",
+        help="Skip HTML chart rendering for faster evaluation/training runs.",
     )
 
     parser.add_argument("--hmm-auto-tune", action="store_true", help="Enable auto-tuning for HMM.")
@@ -104,6 +121,9 @@ def main() -> None:
         hmm_tune_train_ratio=args.hmm_tune_train_ratio,
         load_models_from=Path(args.load_models_from) if args.load_models_from else None,
         save_trained_models=not args.no_save_models,
+        generate_charts=not args.no_charts,
+        test_rolling_window=args.rolling_window,
+        test_prediction_step=args.rolling_step,
     )
     print(f"Experiment completed. Artifacts saved to: {run_dir}")
 

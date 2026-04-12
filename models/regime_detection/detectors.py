@@ -63,7 +63,7 @@ class HMMDetector(BaseDetector):
         n_states: int = 3,
         random_state: int = 42,
         n_iter: int = 300,
-        covariance_type: str = "diag",
+        covariance_type: str = "full",
     ) -> None:
         super().__init__(name="hmm", n_states=n_states, random_state=random_state)
         self.model = GaussianHMM(

@@ -21,6 +21,7 @@ BASE_OHLCV_COLUMNS = [
 
 FEATURE_COLUMNS = [
     "return_1",
+    "rolling_dev_return_14",
     "volatility_24",
     "volatility_72",
     "range_ratio",
@@ -29,20 +30,9 @@ FEATURE_COLUMNS = [
 ]
 
 
-def _load_ticks_for_feature_build(pair_path: Path, latest_only: bool) -> dict[int, pd.DataFrame]:
-    if not latest_only:
-        yearly = load_tick_data(str(pair_path))
-        return preprocess_tick_data(yearly)
-
-    parquet_files = sorted(pair_path.glob("*_combined.parquet"))
-    if not parquet_files:
-        raise ValueError(f"No parquet files found in pair directory: {pair_path}")
-
-    latest_file = max(parquet_files, key=lambda p: int(p.stem.split("_")[0]))
-    latest_year = int(latest_file.stem.split("_")[0])
-    latest_df = pd.read_parquet(latest_file)
-
-    return preprocess_tick_data({latest_year: latest_df})
+def _load_ticks_for_feature_build(pair_path: Path) -> dict[int, pd.DataFrame]:
+    yearly = load_tick_data(str(pair_path))
+    return preprocess_tick_data(yearly)
 
 
 def combine_yearly_ticks(data_ticks: dict[int, pd.DataFrame]) -> pd.DataFrame:
@@ -63,6 +53,8 @@ def add_regime_features(ohlcv_df: pd.DataFrame, return_lag: int = 1) -> pd.DataF
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     df["return_1"] = np.log(df["close_price"] / df["close_price"].shift(return_lag))
+    # Rolling deviation of returns over the latest 14 candles.
+    df["rolling_dev_return_14"] = df["return_1"].rolling(14).std()
     df["volatility_24"] = df["return_1"].rolling(24).std()
     df["volatility_72"] = df["return_1"].rolling(72).std()
 
@@ -85,7 +77,7 @@ def build_feature_table(
     max_bars: int | None = None,
 ) -> pd.DataFrame:
     pair_path = Path(data_root) / pair
-    preprocessed = _load_ticks_for_feature_build(pair_path, latest_only=max_bars is not None)
+    preprocessed = _load_ticks_for_feature_build(pair_path)
     ticks = combine_yearly_ticks(preprocessed)
 
     ohlcv = calculate_ohlcv(ticks, freq=timeframe)

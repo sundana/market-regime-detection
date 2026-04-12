@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from itertools import product
 from pathlib import Path
+import time
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .detectors import BaseDetector, GMMDetector, HMMDetector, KMeansDetector
@@ -12,6 +14,43 @@ from .evaluation import add_composite_score, evaluate_model, split_train_test
 from .features import FEATURE_COLUMNS, build_feature_table
 from .labeling import apply_regime_labels, infer_regime_mapping, summarize_states
 from .visualization import plot_candlestick_with_regimes
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0.0
+
+    total_seconds = int(round(seconds))
+    hours, rem = divmod(total_seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _print_progress_line(prefix: str, current: int, total: int, started_at: float) -> None:
+    if total <= 0:
+        return
+
+    progress = min(max(current / total, 0.0), 1.0)
+    width = 28
+    filled = int(width * progress)
+    bar = "#" * filled + "-" * (width - filled)
+
+    elapsed = time.perf_counter() - started_at
+    rate = current / elapsed if elapsed > 0 else 0.0
+    eta = (total - current) / rate if rate > 0 else float("inf")
+    eta_text = _format_duration(eta) if eta != float("inf") else "--:--"
+
+    print(
+        f"\r{prefix} [{bar}] {current}/{total} ({progress * 100:5.1f}%) "
+        f"elapsed {_format_duration(elapsed)} eta {eta_text}",
+        end="",
+        flush=True,
+    )
+    if current >= total:
+        print("")
 
 
 def _build_detectors(n_states: int, seed: int, hmm_detector: HMMDetector | None = None) -> dict[str, BaseDetector]:
@@ -44,6 +83,160 @@ def _load_pretrained_detectors(pretrained_run_dir: Path) -> dict[str, BaseDetect
         detectors[model_name] = detector_cls.load(model_path)
 
     return detectors
+
+
+def _extract_convergence_info(model_name: str, detector: BaseDetector) -> dict[str, Any]:
+    prefix = model_name.lower()
+    info: dict[str, Any] = {
+        f"{prefix}_convergence_status": "unknown",
+        f"{prefix}_convergence_warning": "",
+        f"{prefix}_converged": None,
+        f"{prefix}_n_iter": None,
+        f"{prefix}_max_iter": None,
+        f"{prefix}_hit_max_iter": None,
+    }
+
+    model = getattr(detector, "model", None)
+    if model is None:
+        info[f"{prefix}_convergence_status"] = "warning"
+        info[f"{prefix}_convergence_warning"] = "Model object not available"
+        return info
+
+    warning_msg = ""
+
+    if model_name == "hmm":
+        monitor = getattr(model, "monitor_", None)
+        converged = bool(getattr(monitor, "converged", False))
+        n_iter = int(getattr(monitor, "iter", -1))
+        max_iter = int(getattr(model, "n_iter", -1))
+        hit_max_iter = bool(max_iter > 0 and n_iter >= max_iter)
+        if not converged:
+            warning_msg = "HMM did not report convergence"
+        elif hit_max_iter:
+            warning_msg = "HMM reached maximum iterations"
+    elif model_name == "gmm":
+        converged = bool(getattr(model, "converged_", False))
+        n_iter = int(getattr(model, "n_iter_", -1))
+        max_iter = int(getattr(model, "max_iter", -1))
+        hit_max_iter = bool(max_iter > 0 and n_iter >= max_iter)
+        if not converged:
+            warning_msg = "GMM did not report convergence"
+        elif hit_max_iter:
+            warning_msg = "GMM reached maximum iterations"
+    elif model_name == "kmeans":
+        n_iter = int(getattr(model, "n_iter_", -1))
+        max_iter = int(getattr(model, "max_iter", -1))
+        hit_max_iter = bool(max_iter > 0 and n_iter >= max_iter)
+        converged = bool(not hit_max_iter and n_iter >= 0)
+        if hit_max_iter:
+            warning_msg = "KMeans reached maximum iterations"
+    else:
+        return info
+
+    info[f"{prefix}_converged"] = converged
+    info[f"{prefix}_n_iter"] = n_iter
+    info[f"{prefix}_max_iter"] = max_iter
+    info[f"{prefix}_hit_max_iter"] = hit_max_iter
+    info[f"{prefix}_convergence_warning"] = warning_msg
+    info[f"{prefix}_convergence_status"] = "warning" if warning_msg else "ok"
+    return info
+
+
+def _print_convergence_log(model_name: str, convergence_info: dict[str, Any]) -> None:
+    prefix = model_name.lower()
+    converged = convergence_info.get(f"{prefix}_converged")
+    n_iter = convergence_info.get(f"{prefix}_n_iter")
+    max_iter = convergence_info.get(f"{prefix}_max_iter")
+    status = convergence_info.get(f"{prefix}_convergence_status", "unknown")
+    warning_msg = str(convergence_info.get(f"{prefix}_convergence_warning", "") or "")
+
+    print(
+        f"[Stage 4/4] -> {model_name.upper()}: convergence "
+        f"status={status} converged={converged} iter={n_iter}/{max_iter}"
+    )
+    if warning_msg:
+        print(f"[Warning] {model_name.upper()} convergence: {warning_msg}")
+
+
+def _extract_training_diagnostics(
+    model_name: str,
+    detector: BaseDetector,
+    x_train: np.ndarray,
+) -> dict[str, Any]:
+    prefix = model_name.lower()
+    info: dict[str, Any] = {
+        f"{prefix}_train_log_likelihood_total": None,
+        f"{prefix}_train_log_likelihood_avg": None,
+        f"{prefix}_train_log_likelihood_last_iter": None,
+        f"{prefix}_train_log_likelihood_delta": None,
+        f"{prefix}_train_log_likelihood_history": "",
+        f"{prefix}_train_objective_name": "",
+        f"{prefix}_train_objective_value": None,
+    }
+
+    model = getattr(detector, "model", None)
+    if model is None or x_train.size == 0:
+        return info
+
+    x_scaled = detector.scaler.transform(x_train)
+
+    if model_name == "hmm":
+        total_ll = float(model.score(x_scaled))
+        history_raw = list(getattr(getattr(model, "monitor_", None), "history", []))
+        history = [float(v) for v in history_raw]
+
+        info[f"{prefix}_train_log_likelihood_total"] = total_ll
+        info[f"{prefix}_train_log_likelihood_avg"] = total_ll / float(len(x_train))
+        info[f"{prefix}_train_objective_name"] = "log_likelihood"
+        info[f"{prefix}_train_objective_value"] = total_ll
+
+        if history:
+            info[f"{prefix}_train_log_likelihood_last_iter"] = history[-1]
+            info[f"{prefix}_train_log_likelihood_history"] = "|".join(f"{v:.6f}" for v in history)
+            if len(history) > 1:
+                info[f"{prefix}_train_log_likelihood_delta"] = history[-1] - history[0]
+    elif model_name == "gmm":
+        avg_ll = float(model.score(x_scaled))
+        total_ll = avg_ll * float(len(x_train))
+        lower_bound = float(getattr(model, "lower_bound_", np.nan))
+
+        info[f"{prefix}_train_log_likelihood_total"] = total_ll
+        info[f"{prefix}_train_log_likelihood_avg"] = avg_ll
+        info[f"{prefix}_train_log_likelihood_last_iter"] = lower_bound
+        info[f"{prefix}_train_objective_name"] = "lower_bound"
+        info[f"{prefix}_train_objective_value"] = lower_bound
+    elif model_name == "kmeans":
+        inertia = float(getattr(model, "inertia_", np.nan))
+        info[f"{prefix}_train_objective_name"] = "inertia"
+        info[f"{prefix}_train_objective_value"] = inertia
+
+    return info
+
+
+def _print_training_diagnostics_log(model_name: str, training_info: dict[str, Any]) -> None:
+    prefix = model_name.lower()
+    total_ll = training_info.get(f"{prefix}_train_log_likelihood_total")
+    avg_ll = training_info.get(f"{prefix}_train_log_likelihood_avg")
+    last_iter_ll = training_info.get(f"{prefix}_train_log_likelihood_last_iter")
+    delta_ll = training_info.get(f"{prefix}_train_log_likelihood_delta")
+    objective_name = str(training_info.get(f"{prefix}_train_objective_name", "") or "")
+    objective_value = training_info.get(f"{prefix}_train_objective_value")
+
+    if total_ll is not None:
+        msg = (
+            f"[Stage 4/4] -> {model_name.upper()}: log_likelihood "
+            f"total={float(total_ll):.4f} avg={float(avg_ll):.6f}"
+        )
+        if last_iter_ll is not None:
+            msg += f" last_iter={float(last_iter_ll):.6f}"
+        if delta_ll is not None:
+            msg += f" delta={float(delta_ll):.6f}"
+        print(msg)
+    elif objective_name:
+        print(
+            f"[Stage 4/4] -> {model_name.upper()}: training objective "
+            f"{objective_name}={objective_value}"
+        )
 
 
 def _apply_labels_and_summary(
@@ -138,12 +331,19 @@ def _tune_hmm_detector(
         hmm_seed_grid=hmm_seed_grid,
     )
 
+    total_candidates = len(state_grid) * len(covariance_grid) * len(iter_grid) * len(seed_grid)
+    print(f"[HMM Tuning] Evaluating {total_candidates} candidate configurations...")
+    tune_started = time.perf_counter()
+
     candidate_rows: list[dict[str, float | str]] = []
-    for n_states_candidate, covariance_type, n_iter_candidate, seed_candidate in product(
+    for idx, (n_states_candidate, covariance_type, n_iter_candidate, seed_candidate) in enumerate(
+        product(
         state_grid,
         covariance_grid,
         iter_grid,
         seed_grid,
+        ),
+        start=1,
     ):
         detector = HMMDetector(
             n_states=int(n_states_candidate),
@@ -180,7 +380,9 @@ def _tune_hmm_detector(
             )
             candidate_rows.append(metrics)
         except Exception:
-            continue
+            pass
+
+        _print_progress_line("[HMM Tuning]", idx, total_candidates, tune_started)
 
     if not candidate_rows:
         fallback = HMMDetector(n_states=n_states, random_state=seed)
@@ -226,19 +428,64 @@ def _run_single_model(
     run_dir: Path,
     fit_model: bool,
     save_detector_artifact: bool,
-) -> dict[str, float]:
+    generate_chart: bool,
+    test_rolling_window: int,
+    test_prediction_step: int,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    model_started = time.perf_counter()
+    print(f"[Stage 4/4] -> {model_name.upper()}: preparing inputs...")
+
     state_col = f"{model_name}_state"
     label_col = f"{model_name}_regime"
 
     x_train = features_df.iloc[:train_idx][FEATURE_COLUMNS].to_numpy()
-    x_all = features_df[FEATURE_COLUMNS].to_numpy()
 
     if fit_model:
+        print(f"[Stage 4/4] -> {model_name.upper()}: training model...")
         detector.fit(x_train)
-    all_states = detector.predict(x_all)
+    else:
+        print(f"[Stage 4/4] -> {model_name.upper()}: using pre-trained model (skip training)...")
+
+    convergence_info = _extract_convergence_info(model_name=model_name, detector=detector)
+    _print_convergence_log(model_name=model_name, convergence_info=convergence_info)
+    training_info = _extract_training_diagnostics(model_name=model_name, detector=detector, x_train=x_train)
+    _print_training_diagnostics_log(model_name=model_name, training_info=training_info)
+
+    print(
+        f"[Stage 4/4] -> {model_name.upper()}: predicting states "
+        f"(walk-forward, window={test_rolling_window}, step=1 on test)..."
+    )
+
+    all_states = np.empty(len(features_df), dtype=int)
+    all_states[:train_idx] = detector.predict(x_train)
+
+    rolling_window_start: list[pd.Timestamp | None] = [None] * len(features_df)
+    test_total = len(features_df) - train_idx
+    rolling_started = time.perf_counter()
+
+    if test_total > 0:
+        for offset, row_idx in enumerate(range(train_idx, len(features_df)), start=1):
+            window_end_idx = row_idx + 1
+            window_start_idx = max(0, window_end_idx - test_rolling_window)
+            x_window = features_df.iloc[window_start_idx:window_end_idx][FEATURE_COLUMNS].to_numpy()
+
+            # Walk-forward inference: take only the last state at time t.
+            rolling_states = detector.predict(x_window)
+            all_states[row_idx] = int(rolling_states[-1])
+            rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[window_start_idx]["timestamp"])
+
+            _print_progress_line(
+                f"[Stage 4/4] -> {model_name.upper()}: walk-forward predict",
+                offset,
+                test_total,
+                rolling_started,
+            )
 
     predicted_df = features_df.copy()
     predicted_df[state_col] = all_states
+    predicted_df["rolling_window_start"] = rolling_window_start
+    predicted_df["rolling_window_size"] = float(test_rolling_window)
+    predicted_df["inference_method"] = "walk_forward"
 
     predicted_df, summary = _apply_labels_and_summary(
         predicted_df=predicted_df,
@@ -252,23 +499,36 @@ def _run_single_model(
     model_dir.mkdir(parents=True, exist_ok=True)
 
     if save_detector_artifact:
+        print(f"[Stage 4/4] -> {model_name.upper()}: saving detector artifact...")
         detector.save(_detector_artifact_path(run_dir, model_name))
 
+    print(f"[Stage 4/4] -> {model_name.upper()}: writing labels and state summary...")
     predicted_df.to_csv(model_dir / f"{model_name}_labels.csv", index=False)
 
     summary.to_csv(model_dir / f"{model_name}_state_summary.csv", index=False)
 
     metrics = evaluate_model(test_labeled, state_col=state_col, label_col=label_col)
 
-    chart_path = plot_candlestick_with_regimes(
-        test_labeled,
-        label_col=label_col,
-        output_path=model_dir / f"{model_name}_candlestick_regime.html",
-        title=f"Regime Labeling on Candlestick - {model_name.upper()}",
-    )
-    metrics["chart_path"] = str(chart_path)
+    if generate_chart:
+        print(f"[Stage 4/4] -> {model_name.upper()}: rendering candlestick HTML chart...")
+        chart_path = plot_candlestick_with_regimes(
+            test_labeled,
+            label_col=label_col,
+            output_path=model_dir / f"{model_name}_candlestick_regime.html",
+            title=f"Regime Labeling on Candlestick - {model_name.upper()}",
+            inference_note=(
+                "Out-of-sample states predicted with walk-forward inference "
+                f"({test_rolling_window} bars context, step=1, last-state-only at each t)"
+            ),
+        )
+        metrics["chart_path"] = str(chart_path)
+    else:
+        metrics["chart_path"] = ""
 
-    return metrics
+    model_elapsed = time.perf_counter() - model_started
+    print(f"[Stage 4/4] -> {model_name.upper()}: done in {_format_duration(model_elapsed)}")
+
+    return metrics, convergence_info, training_info
 
 
 def run_experiment(
@@ -288,7 +548,18 @@ def run_experiment(
     hmm_tune_train_ratio: float = 0.8,
     load_models_from: str | Path | None = None,
     save_trained_models: bool = True,
+    generate_charts: bool = True,
+    test_rolling_window: int = 120,
+    test_prediction_step: int = 1,
 ) -> Path:
+    if test_rolling_window < 2:
+        raise ValueError("test_rolling_window must be >= 2")
+    if test_prediction_step != 1:
+        raise ValueError("Walk-forward inference requires test_prediction_step=1")
+
+    experiment_started = time.perf_counter()
+    print("[Stage 1/4] Building feature table...")
+    feature_started = time.perf_counter()
     features_df = build_feature_table(
         data_root=data_root,
         pair=pair,
@@ -296,8 +567,16 @@ def run_experiment(
         return_lag=1,
         max_bars=max_bars,
     )
+    feature_elapsed = time.perf_counter() - feature_started
+    print(f"[Stage 1/4] Done in {_format_duration(feature_elapsed)} ({len(features_df):,} rows)")
+
+    print("[Stage 2/4] Splitting train/test...")
 
     _, _, train_idx = split_train_test(features_df, train_ratio=train_ratio)
+    print(
+        f"[Stage 2/4] Done. train={train_idx:,} test={len(features_df) - train_idx:,} "
+        f"(ratio={train_ratio:.2f})"
+    )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_dir = Path(output_root) / "regime_detection" / f"{pair}_{timeframe}_{timestamp}"
@@ -305,7 +584,9 @@ def run_experiment(
 
     features_df.to_csv(run_dir / "feature_table.csv", index=False)
 
-    all_metrics: dict[str, dict[str, float]] = {}
+    all_metrics: dict[str, dict[str, Any]] = {}
+    convergence_summary: dict[str, Any] = {}
+    training_diagnostics_summary: dict[str, Any] = {}
     pretrained_mode = load_models_from is not None
     pretrained_path = Path(load_models_from) if load_models_from is not None else None
 
@@ -315,6 +596,7 @@ def run_experiment(
     hmm_detector: HMMDetector | None = None
     hmm_tuning_info: dict[str, Any] = {}
 
+    print("[Stage 3/4] Preparing detectors...")
     if hmm_auto_tune and not pretrained_mode:
         hmm_detector, hmm_tuning_info = _tune_hmm_detector(
             features_df=features_df,
@@ -332,12 +614,19 @@ def run_experiment(
     if pretrained_mode:
         if pretrained_path is None:
             raise ValueError("load_models_from path is required in pretrained mode")
+        print(f"[Stage 3/4] Loading pretrained detectors from: {pretrained_path}")
         detectors = _load_pretrained_detectors(pretrained_path)
     else:
         detectors = _build_detectors(n_states=n_states, seed=seed, hmm_detector=hmm_detector)
+    print("[Stage 3/4] Done.")
 
-    for name, detector in detectors.items():
-        all_metrics[name] = _run_single_model(
+    print("[Stage 4/4] Running model training/evaluation...")
+    model_started = time.perf_counter()
+    model_total = len(detectors)
+
+    for idx, (name, detector) in enumerate(detectors.items(), start=1):
+        print(f"[Stage 4/4] Starting model {idx}/{model_total}: {name.upper()}")
+        model_metrics, model_convergence, model_training_info = _run_single_model(
             model_name=name,
             detector=detector,
             features_df=features_df,
@@ -345,7 +634,14 @@ def run_experiment(
             run_dir=run_dir,
             fit_model=not pretrained_mode,
             save_detector_artifact=save_trained_models and not pretrained_mode,
+            generate_chart=generate_charts,
+            test_rolling_window=test_rolling_window,
+            test_prediction_step=test_prediction_step,
         )
+        all_metrics[name] = model_metrics
+        convergence_summary.update(model_convergence)
+        training_diagnostics_summary.update(model_training_info)
+        _print_progress_line("[Stage 4/4]", idx, model_total, model_started)
 
     leaderboard = pd.DataFrame.from_dict(all_metrics, orient="index").reset_index().rename(columns={"index": "model"})
     leaderboard = add_composite_score(leaderboard)
@@ -364,10 +660,19 @@ def run_experiment(
             "pretrained_mode": pretrained_mode,
             "load_models_from": str(pretrained_path) if pretrained_path is not None else "",
             "save_trained_models": save_trained_models,
+            "generate_charts": generate_charts,
+            "test_prediction_mode": "walk_forward",
+            "test_rolling_window": test_rolling_window,
+            "test_prediction_step": test_prediction_step,
             "hmm_auto_tune": hmm_auto_tune,
             **hmm_tuning_info,
+            **convergence_summary,
+            **training_diagnostics_summary,
         }
     ]
     pd.DataFrame(summary_rows).to_csv(run_dir / "run_summary.csv", index=False)
+
+    total_elapsed = time.perf_counter() - experiment_started
+    print(f"[Complete] Finished in {_format_duration(total_elapsed)}")
 
     return run_dir
