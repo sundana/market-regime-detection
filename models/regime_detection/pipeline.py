@@ -451,10 +451,17 @@ def _run_single_model(
     training_info = _extract_training_diagnostics(model_name=model_name, detector=detector, x_train=x_train)
     _print_training_diagnostics_log(model_name=model_name, training_info=training_info)
 
-    print(
-        f"[Stage 4/4] -> {model_name.upper()}: predicting states "
-        f"(walk-forward, window={test_rolling_window}, step=1 on test)..."
-    )
+    uses_rolling_context = model_name == "hmm"
+    if uses_rolling_context:
+        print(
+            f"[Stage 4/4] -> {model_name.upper()}: predicting states "
+            f"(walk-forward, window={test_rolling_window}, step=1 on test)..."
+        )
+    else:
+        print(
+            f"[Stage 4/4] -> {model_name.upper()}: predicting states "
+            "(point-wise; rolling-window has no effect for this detector)..."
+        )
 
     all_states = np.empty(len(features_df), dtype=int)
     all_states[:train_idx] = detector.predict(x_train)
@@ -464,28 +471,40 @@ def _run_single_model(
     rolling_started = time.perf_counter()
 
     if test_total > 0:
-        for offset, row_idx in enumerate(range(train_idx, len(features_df)), start=1):
-            window_end_idx = row_idx + 1
-            window_start_idx = max(0, window_end_idx - test_rolling_window)
-            x_window = features_df.iloc[window_start_idx:window_end_idx][FEATURE_COLUMNS].to_numpy()
+        if uses_rolling_context:
+            for offset, row_idx in enumerate(range(train_idx, len(features_df)), start=1):
+                window_end_idx = row_idx + 1
+                window_start_idx = max(0, window_end_idx - test_rolling_window)
+                x_window = features_df.iloc[window_start_idx:window_end_idx][FEATURE_COLUMNS].to_numpy()
 
-            # Walk-forward inference: take only the last state at time t.
-            rolling_states = detector.predict(x_window)
-            all_states[row_idx] = int(rolling_states[-1])
-            rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[window_start_idx]["timestamp"])
+                # Walk-forward inference: take only the last state at time t.
+                rolling_states = detector.predict(x_window)
+                all_states[row_idx] = int(rolling_states[-1])
+                rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[window_start_idx]["timestamp"])
 
-            _print_progress_line(
-                f"[Stage 4/4] -> {model_name.upper()}: walk-forward predict",
-                offset,
-                test_total,
-                rolling_started,
-            )
+                _print_progress_line(
+                    f"[Stage 4/4] -> {model_name.upper()}: walk-forward predict",
+                    offset,
+                    test_total,
+                    rolling_started,
+                )
+        else:
+            x_test = features_df.iloc[train_idx:][FEATURE_COLUMNS].to_numpy()
+            all_states[train_idx:] = detector.predict(x_test)
+            for offset, row_idx in enumerate(range(train_idx, len(features_df)), start=1):
+                rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[row_idx]["timestamp"])
+                _print_progress_line(
+                    f"[Stage 4/4] -> {model_name.upper()}: point-wise predict",
+                    offset,
+                    test_total,
+                    rolling_started,
+                )
 
     predicted_df = features_df.copy()
     predicted_df[state_col] = all_states
     predicted_df["rolling_window_start"] = rolling_window_start
-    predicted_df["rolling_window_size"] = float(test_rolling_window)
-    predicted_df["inference_method"] = "walk_forward"
+    predicted_df["rolling_window_size"] = float(test_rolling_window if uses_rolling_context else 1)
+    predicted_df["inference_method"] = "walk_forward" if uses_rolling_context else "pointwise"
 
     predicted_df, summary = _apply_labels_and_summary(
         predicted_df=predicted_df,
@@ -511,15 +530,18 @@ def _run_single_model(
 
     if generate_chart:
         print(f"[Stage 4/4] -> {model_name.upper()}: rendering candlestick HTML chart...")
+        inference_note = (
+            "Out-of-sample states predicted with walk-forward inference "
+            f"({test_rolling_window} bars context, step=1, last-state-only at each t)"
+            if uses_rolling_context
+            else "Out-of-sample states predicted point-wise (non-sequential detector; rolling-window has no effect)."
+        )
         chart_path = plot_candlestick_with_regimes(
             test_labeled,
             label_col=label_col,
             output_path=model_dir / f"{model_name}_candlestick_regime.html",
             title=f"Regime Labeling on Candlestick - {model_name.upper()}",
-            inference_note=(
-                "Out-of-sample states predicted with walk-forward inference "
-                f"({test_rolling_window} bars context, step=1, last-state-only at each t)"
-            ),
+            inference_note=inference_note,
         )
         metrics["chart_path"] = str(chart_path)
     else:

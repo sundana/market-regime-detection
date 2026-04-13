@@ -145,6 +145,6 @@ Composite model ranking is saved in `leaderboard.csv` via `composite_score`.
 - `--load-models-from` expects detector files (`*_detector.pkl`) inside each model subfolder and skips model fitting.
 - Runtime logs now include stage-based progress + ETA for data preparation, HMM tuning, and model training/evaluation.
 - Stage 4 now prints per-model substeps so long operations (especially chart rendering) remain visible in terminal output.
-- Test inference uses walk-forward mode: each test bar is predicted independently from a trailing context window (`--rolling-window`) with `--rolling-step=1`.
+- Test inference uses model-aware behavior: HMM uses walk-forward context (`--rolling-window`), while GMM/KMeans are point-wise (non-sequential), so rolling-window does not change their predictions.
 - Training now prints convergence diagnostics per model (HMM, GMM, KMeans), with automatic warning lines if convergence is not achieved.
 - `run_summary.csv` now stores per-model convergence fields such as converged flag, iteration count, max iteration, and warning message.
