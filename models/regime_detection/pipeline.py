@@ -429,6 +429,7 @@ def _run_single_model(
     fit_model: bool,
     save_detector_artifact: bool,
     generate_chart: bool,
+    chart_include_train: bool,
     test_rolling_window: int,
     test_prediction_step: int,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -492,7 +493,6 @@ def _run_single_model(
             x_test = features_df.iloc[train_idx:][FEATURE_COLUMNS].to_numpy()
             all_states[train_idx:] = detector.predict(x_test)
             for offset, row_idx in enumerate(range(train_idx, len(features_df)), start=1):
-                rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[row_idx]["timestamp"])
                 _print_progress_line(
                     f"[Stage 4/4] -> {model_name.upper()}: point-wise predict",
                     offset,
@@ -530,6 +530,11 @@ def _run_single_model(
 
     if generate_chart:
         print(f"[Stage 4/4] -> {model_name.upper()}: rendering candlestick HTML chart...")
+        chart_df = predicted_df if chart_include_train else test_labeled
+        split_ts: pd.Timestamp | None = None
+        if chart_include_train and 0 < train_idx < len(predicted_df):
+            split_ts = pd.Timestamp(predicted_df.iloc[train_idx]["timestamp"])
+
         inference_note = (
             "Out-of-sample states predicted with walk-forward inference "
             f"({test_rolling_window} bars context, step=1, last-state-only at each t)"
@@ -537,11 +542,13 @@ def _run_single_model(
             else "Out-of-sample states predicted point-wise (non-sequential detector; rolling-window has no effect)."
         )
         chart_path = plot_candlestick_with_regimes(
-            test_labeled,
+            chart_df,
             label_col=label_col,
             output_path=model_dir / f"{model_name}_candlestick_regime.html",
             title=f"Regime Labeling on Candlestick - {model_name.upper()}",
             inference_note=inference_note,
+            show_rolling_points=uses_rolling_context,
+            train_test_split_ts=split_ts,
         )
         metrics["chart_path"] = str(chart_path)
     else:
@@ -571,6 +578,7 @@ def run_experiment(
     load_models_from: str | Path | None = None,
     save_trained_models: bool = True,
     generate_charts: bool = True,
+    chart_include_train: bool = False,
     test_rolling_window: int = 120,
     test_prediction_step: int = 1,
 ) -> Path:
@@ -657,6 +665,7 @@ def run_experiment(
             fit_model=not pretrained_mode,
             save_detector_artifact=save_trained_models and not pretrained_mode,
             generate_chart=generate_charts,
+            chart_include_train=chart_include_train,
             test_rolling_window=test_rolling_window,
             test_prediction_step=test_prediction_step,
         )
@@ -683,6 +692,7 @@ def run_experiment(
             "load_models_from": str(pretrained_path) if pretrained_path is not None else "",
             "save_trained_models": save_trained_models,
             "generate_charts": generate_charts,
+            "chart_include_train": chart_include_train,
             "test_prediction_mode": "walk_forward",
             "test_rolling_window": test_rolling_window,
             "test_prediction_step": test_prediction_step,

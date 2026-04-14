@@ -24,6 +24,7 @@ FEATURE_COLUMNS = [
     "rolling_dev_return_14",
     "volatility_24",
     "volatility_72",
+    "vix",
     "range_ratio",
     "body_ratio",
     "volume_change",
@@ -57,6 +58,12 @@ def add_regime_features(ohlcv_df: pd.DataFrame, return_lag: int = 1) -> pd.DataF
     df["rolling_dev_return_14"] = df["return_1"].rolling(14).std()
     df["volatility_24"] = df["return_1"].rolling(24).std()
     df["volatility_72"] = df["return_1"].rolling(72).std()
+
+    # VIX: Garman-Klass volatility over 30-period rolling window
+    df["hl_ratio"] = np.log(df["high_price"] / df["low_price"])
+    df["co_ratio"] = np.log(df["close_price"] / df["open_price"])
+    df["gk_volatility"] = (0.5 * (df["hl_ratio"] ** 2) - (2 * np.log(2) - 1) * (df["co_ratio"] ** 2)).rolling(30).mean() ** 0.5
+    df["vix"] = df["gk_volatility"]
 
     close_safe = df["close_price"].replace(0, np.nan)
     open_safe = df["open_price"].replace(0, np.nan)

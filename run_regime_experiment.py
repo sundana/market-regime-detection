@@ -66,6 +66,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip HTML chart rendering for faster evaluation/training runs.",
     )
+    parser.add_argument(
+        "--chart-full-range",
+        action="store_true",
+        help="Render chart on full train+test range and mark train/test split.",
+    )
 
     parser.add_argument("--hmm-auto-tune", action="store_true", help="Enable auto-tuning for HMM.")
     parser.add_argument(
@@ -122,6 +127,7 @@ def main() -> None:
         load_models_from=Path(args.load_models_from) if args.load_models_from else None,
         save_trained_models=not args.no_save_models,
         generate_charts=not args.no_charts,
+        chart_include_train=args.chart_full_range,
         test_rolling_window=args.rolling_window,
         test_prediction_step=args.rolling_step,
     )
