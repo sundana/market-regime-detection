@@ -2,7 +2,8 @@ import numpy as np
 import pandas as pd
 
 
-def calculate_ohlcv(df, freq='1h'):
+def calculate_ohlcv(df: pd.DataFrame, freq='1h') -> pd.DataFrame:
+    """Resample ticks to OHLCV."""
     df_copy = df.copy()
     df_copy['mid_price'] = (df_copy['bid'] + df_copy['ask']) / 2
     df_copy.set_index('timestamp', inplace=True)
@@ -20,11 +21,3 @@ def calculate_ohlcv(df, freq='1h'):
     ohlcv.reset_index(inplace=True)
 
     return ohlcv
-
-
-
-def calculate_log_return(df):
-    df_copy = df.copy()
-    df_copy['log_return'] = np.log(df_copy['close_price'] / df_copy['close_price'].shift(2))
-    df_copy.dropna(inplace=True)
-    return df_copy

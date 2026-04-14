@@ -12,7 +12,7 @@ if os.name == "nt":
     os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import numpy as np
-from hmmlearn.hmm import GaussianHMM
+from hmmlearn.hmm import GMMHMM, GaussianHMM
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.preprocessing import StandardScaler
@@ -68,6 +68,38 @@ class HMMDetector(BaseDetector):
         super().__init__(name="hmm", n_states=n_states, random_state=random_state)
         self.model = GaussianHMM(
             n_components=n_states,
+            covariance_type=covariance_type,
+            n_iter=n_iter,
+            random_state=random_state,
+        )
+
+    def fit(self, x_train: np.ndarray) -> None:
+        x_scaled = self.scaler.fit_transform(x_train)
+        self.model.fit(x_scaled)
+
+    def predict(self, x_input: np.ndarray) -> np.ndarray:
+        x_scaled = self.scaler.transform(x_input)
+        states = self.model.predict(x_scaled)
+        return states.astype(int)
+
+
+class HMMGMMDetector(BaseDetector):
+    def __init__(
+        self,
+        n_states: int = 3,
+        random_state: int = 42,
+        n_mix: int = 2,
+        n_iter: int = 300,
+        covariance_type: str = "diag",
+    ) -> None:
+        super().__init__(name="hmm_gmm", n_states=n_states, random_state=random_state)
+        if n_mix < 1:
+            raise ValueError("n_mix must be >= 1")
+
+        self.n_mix = int(n_mix)
+        self.model = GMMHMM(
+            n_components=n_states,
+            n_mix=self.n_mix,
             covariance_type=covariance_type,
             n_iter=n_iter,
             random_state=random_state,

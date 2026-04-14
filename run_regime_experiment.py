@@ -35,6 +35,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=str, default="data", help="Data root containing pair folders.")
     parser.add_argument("--output-dir", type=str, default="results", help="Directory for experiment artifacts.")
     parser.add_argument("--states", type=int, default=3, help="Number of hidden states / clusters.")
+    parser.add_argument(
+        "--models",
+        type=str,
+        default=None,
+        help=(
+            "Comma-separated model list to run. "
+            "Allowed: hmm,hmm_gmm,gmm,kmeans. Use 'all' (or omit) to run all."
+        ),
+    )
     parser.add_argument("--train-ratio", type=float, default=0.7, help="Train ratio for time-based split.")
     parser.add_argument("--max-bars", type=int, default=None, help="Use only latest N bars for faster experiments.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
@@ -103,6 +112,24 @@ def parse_args() -> argparse.Namespace:
         default=0.8,
         help="Internal train ratio for HMM tuning split inside training data.",
     )
+    parser.add_argument(
+        "--hmm-gmm-mixtures",
+        type=int,
+        default=2,
+        help="Number of Gaussian mixtures per hidden state for HMM-GMM.",
+    )
+    parser.add_argument(
+        "--hmm-gmm-iter",
+        type=int,
+        default=300,
+        help="Maximum EM iterations for HMM-GMM.",
+    )
+    parser.add_argument(
+        "--hmm-gmm-covariance",
+        type=str,
+        default="diag",
+        help="Covariance type for HMM-GMM emissions (diag/full/spherical/tied).",
+    )
 
     return parser.parse_args()
 
@@ -115,6 +142,7 @@ def main() -> None:
         timeframe=args.timeframe,
         output_root=Path(args.output_dir),
         n_states=args.states,
+        selected_models=_parse_str_list(args.models),
         train_ratio=args.train_ratio,
         max_bars=args.max_bars,
         seed=args.seed,
@@ -124,6 +152,9 @@ def main() -> None:
         hmm_iter_grid=_parse_int_list(args.hmm_iter_grid),
         hmm_seed_grid=_parse_int_list(args.hmm_seed_grid),
         hmm_tune_train_ratio=args.hmm_tune_train_ratio,
+        hmm_gmm_n_mix=args.hmm_gmm_mixtures,
+        hmm_gmm_n_iter=args.hmm_gmm_iter,
+        hmm_gmm_covariance_type=args.hmm_gmm_covariance.strip().lower(),
         load_models_from=Path(args.load_models_from) if args.load_models_from else None,
         save_trained_models=not args.no_save_models,
         generate_charts=not args.no_charts,

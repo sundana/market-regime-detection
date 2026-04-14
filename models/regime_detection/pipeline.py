@@ -9,11 +9,37 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .detectors import BaseDetector, GMMDetector, HMMDetector, KMeansDetector
+from .detectors import BaseDetector, GMMDetector, HMMDetector, HMMGMMDetector, KMeansDetector
 from .evaluation import add_composite_score, evaluate_model, split_train_test
 from .features import FEATURE_COLUMNS, build_feature_table
 from .labeling import apply_regime_labels, infer_regime_mapping, summarize_states
 from .visualization import plot_candlestick_with_regimes
+
+
+MODEL_ORDER: tuple[str, ...] = ("hmm", "hmm_gmm", "gmm", "kmeans")
+DEFAULT_PRETRAINED_REQUIRED_MODELS: tuple[str, ...] = ("hmm", "gmm", "kmeans")
+
+
+def _resolve_selected_models(selected_models: list[str] | None) -> list[str]:
+    if selected_models is None:
+        return list(MODEL_ORDER)
+
+    cleaned = [str(m).strip().lower() for m in selected_models if str(m).strip()]
+    if not cleaned:
+        raise ValueError("selected_models must contain at least one model name")
+
+    if "all" in cleaned:
+        return list(MODEL_ORDER)
+
+    invalid = sorted({m for m in cleaned if m not in MODEL_ORDER})
+    if invalid:
+        raise ValueError(
+            f"Unknown model(s) in selected_models: {', '.join(invalid)}. "
+            f"Allowed models: {', '.join(MODEL_ORDER)}"
+        )
+
+    selected_set = set(cleaned)
+    return [model_name for model_name in MODEL_ORDER if model_name in selected_set]
 
 
 def _format_duration(seconds: float) -> str:
@@ -53,27 +79,57 @@ def _print_progress_line(prefix: str, current: int, total: int, started_at: floa
         print("")
 
 
-def _build_detectors(n_states: int, seed: int, hmm_detector: HMMDetector | None = None) -> dict[str, BaseDetector]:
-    return {
+def _build_detectors(
+    n_states: int,
+    seed: int,
+    hmm_detector: HMMDetector | None = None,
+    hmm_gmm_n_mix: int = 2,
+    hmm_gmm_n_iter: int = 300,
+    hmm_gmm_covariance_type: str = "diag",
+    selected_models: list[str] | None = None,
+) -> dict[str, BaseDetector]:
+    detectors: dict[str, BaseDetector] = {
         "hmm": hmm_detector or HMMDetector(n_states=n_states, random_state=seed),
+        "hmm_gmm": HMMGMMDetector(
+            n_states=n_states,
+            random_state=seed,
+            n_mix=hmm_gmm_n_mix,
+            n_iter=hmm_gmm_n_iter,
+            covariance_type=hmm_gmm_covariance_type,
+        ),
         "gmm": GMMDetector(n_states=n_states, random_state=seed),
         "kmeans": KMeansDetector(n_states=n_states, random_state=seed),
     }
+
+    model_names = _resolve_selected_models(selected_models)
+    return {model_name: detectors[model_name] for model_name in model_names}
 
 
 def _detector_artifact_path(run_dir: Path, model_name: str) -> Path:
     return run_dir / model_name / f"{model_name}_detector.pkl"
 
 
-def _load_pretrained_detectors(pretrained_run_dir: Path) -> dict[str, BaseDetector]:
+def _load_pretrained_detectors(
+    pretrained_run_dir: Path,
+    selected_models: list[str] | None = None,
+) -> dict[str, BaseDetector]:
     model_classes: dict[str, type[BaseDetector]] = {
         "hmm": HMMDetector,
+        "hmm_gmm": HMMGMMDetector,
         "gmm": GMMDetector,
         "kmeans": KMeansDetector,
     }
 
+    resolved_models = _resolve_selected_models(selected_models)
+    required_models: list[str] = (
+        [m for m in DEFAULT_PRETRAINED_REQUIRED_MODELS if m in resolved_models]
+        if selected_models is None
+        else resolved_models
+    )
+
     detectors: dict[str, BaseDetector] = {}
-    for model_name, detector_cls in model_classes.items():
+    for model_name in required_models:
+        detector_cls = model_classes[model_name]
         model_path = _detector_artifact_path(pretrained_run_dir, model_name)
         if not model_path.exists():
             raise FileNotFoundError(
@@ -81,6 +137,11 @@ def _load_pretrained_detectors(pretrained_run_dir: Path) -> dict[str, BaseDetect
                 "Run training once to generate detector artifacts."
             )
         detectors[model_name] = detector_cls.load(model_path)
+
+    if selected_models is None and "hmm_gmm" in resolved_models:
+        model_path = _detector_artifact_path(pretrained_run_dir, "hmm_gmm")
+        if model_path.exists():
+            detectors["hmm_gmm"] = HMMGMMDetector.load(model_path)
 
     return detectors
 
@@ -104,16 +165,16 @@ def _extract_convergence_info(model_name: str, detector: BaseDetector) -> dict[s
 
     warning_msg = ""
 
-    if model_name == "hmm":
+    if model_name in {"hmm", "hmm_gmm"}:
         monitor = getattr(model, "monitor_", None)
         converged = bool(getattr(monitor, "converged", False))
         n_iter = int(getattr(monitor, "iter", -1))
         max_iter = int(getattr(model, "n_iter", -1))
         hit_max_iter = bool(max_iter > 0 and n_iter >= max_iter)
         if not converged:
-            warning_msg = "HMM did not report convergence"
+            warning_msg = f"{model_name.upper()} did not report convergence"
         elif hit_max_iter:
-            warning_msg = "HMM reached maximum iterations"
+            warning_msg = f"{model_name.upper()} reached maximum iterations"
     elif model_name == "gmm":
         converged = bool(getattr(model, "converged_", False))
         n_iter = int(getattr(model, "n_iter_", -1))
@@ -180,7 +241,7 @@ def _extract_training_diagnostics(
 
     x_scaled = detector.scaler.transform(x_train)
 
-    if model_name == "hmm":
+    if model_name in {"hmm", "hmm_gmm"}:
         total_ll = float(model.score(x_scaled))
         history_raw = list(getattr(getattr(model, "monitor_", None), "history", []))
         history = [float(v) for v in history_raw]
@@ -452,7 +513,7 @@ def _run_single_model(
     training_info = _extract_training_diagnostics(model_name=model_name, detector=detector, x_train=x_train)
     _print_training_diagnostics_log(model_name=model_name, training_info=training_info)
 
-    uses_rolling_context = model_name == "hmm"
+    uses_rolling_context = model_name in {"hmm", "hmm_gmm"}
     if uses_rolling_context:
         print(
             f"[Stage 4/4] -> {model_name.upper()}: predicting states "
@@ -575,6 +636,10 @@ def run_experiment(
     hmm_iter_grid: list[int] | None = None,
     hmm_seed_grid: list[int] | None = None,
     hmm_tune_train_ratio: float = 0.8,
+    hmm_gmm_n_mix: int = 2,
+    hmm_gmm_n_iter: int = 300,
+    hmm_gmm_covariance_type: str = "diag",
+    selected_models: list[str] | None = None,
     load_models_from: str | Path | None = None,
     save_trained_models: bool = True,
     generate_charts: bool = True,
@@ -582,10 +647,22 @@ def run_experiment(
     test_rolling_window: int = 120,
     test_prediction_step: int = 1,
 ) -> Path:
+    selected_models = _resolve_selected_models(selected_models)
+
     if test_rolling_window < 2:
         raise ValueError("test_rolling_window must be >= 2")
     if test_prediction_step != 1:
         raise ValueError("Walk-forward inference requires test_prediction_step=1")
+    if hmm_gmm_n_mix < 1:
+        raise ValueError("hmm_gmm_n_mix must be >= 1")
+    if hmm_gmm_n_iter < 1:
+        raise ValueError("hmm_gmm_n_iter must be >= 1")
+    hmm_gmm_covariance_type = str(hmm_gmm_covariance_type).strip().lower()
+    allowed_hmm_gmm_covariance = {"diag", "full", "spherical", "tied"}
+    if hmm_gmm_covariance_type not in allowed_hmm_gmm_covariance:
+        raise ValueError(
+            "hmm_gmm_covariance_type must be one of: diag, full, spherical, tied"
+        )
 
     experiment_started = time.perf_counter()
     print("[Stage 1/4] Building feature table...")
@@ -622,6 +699,8 @@ def run_experiment(
 
     if pretrained_mode and hmm_auto_tune:
         raise ValueError("hmm_auto_tune cannot be enabled when load_models_from is used")
+    if hmm_auto_tune and "hmm" not in selected_models:
+        raise ValueError("hmm_auto_tune requires 'hmm' to be included in selected_models")
 
     hmm_detector: HMMDetector | None = None
     hmm_tuning_info: dict[str, Any] = {}
@@ -645,9 +724,17 @@ def run_experiment(
         if pretrained_path is None:
             raise ValueError("load_models_from path is required in pretrained mode")
         print(f"[Stage 3/4] Loading pretrained detectors from: {pretrained_path}")
-        detectors = _load_pretrained_detectors(pretrained_path)
+        detectors = _load_pretrained_detectors(pretrained_path, selected_models=selected_models)
     else:
-        detectors = _build_detectors(n_states=n_states, seed=seed, hmm_detector=hmm_detector)
+        detectors = _build_detectors(
+            n_states=n_states,
+            seed=seed,
+            hmm_detector=hmm_detector,
+            hmm_gmm_n_mix=hmm_gmm_n_mix,
+            hmm_gmm_n_iter=hmm_gmm_n_iter,
+            hmm_gmm_covariance_type=hmm_gmm_covariance_type,
+            selected_models=selected_models,
+        )
     print("[Stage 3/4] Done.")
 
     print("[Stage 4/4] Running model training/evaluation...")
@@ -696,7 +783,11 @@ def run_experiment(
             "test_prediction_mode": "walk_forward",
             "test_rolling_window": test_rolling_window,
             "test_prediction_step": test_prediction_step,
+            "selected_models": "|".join(selected_models),
             "hmm_auto_tune": hmm_auto_tune,
+            "hmm_gmm_n_mix": hmm_gmm_n_mix,
+            "hmm_gmm_n_iter": hmm_gmm_n_iter,
+            "hmm_gmm_covariance_type": hmm_gmm_covariance_type,
             **hmm_tuning_info,
             **convergence_summary,
             **training_diagnostics_summary,
