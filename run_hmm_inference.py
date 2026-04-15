@@ -55,6 +55,12 @@ def parse_args() -> argparse.Namespace:
         help="Walk-forward context length in bars.",
     )
     parser.add_argument(
+        "--inference-mode",
+        type=str,
+        default="walk_forward",
+        help="Inference mode to use: pointwise or walk_forward.",
+    )
+    parser.add_argument(
         "--max-bars",
         type=int,
         default=None,
@@ -83,7 +89,8 @@ def main() -> None:
         raise FileNotFoundError(f"Detector file not found: {detector_path}")
 
     if args.rolling_window < 2:
-        raise ValueError("rolling_window must be >= 2")
+        if str(args.inference_mode).strip().lower() == "walk_forward":
+            raise ValueError("rolling_window must be >= 2")
 
     started = time.perf_counter()
     start_ts, end_exclusive_ts = _month_range(args.year, args.month)
@@ -121,24 +128,35 @@ def main() -> None:
     all_states = np.full(len(features_df), np.nan)
     rolling_window_start: list[pd.Timestamp | None] = [None] * len(features_df)
 
-    print("[HMM Inference] Running walk-forward prediction...")
+    inference_mode = str(args.inference_mode).strip().lower()
+    if inference_mode not in {"pointwise", "walk_forward"}:
+        raise ValueError("inference_mode must be one of: pointwise, walk_forward")
+
+    print(f"[HMM Inference] Running {inference_mode} prediction...")
     prediction_started = time.perf_counter()
-    for offset, row_idx in enumerate(target_indices, start=1):
-        window_end_idx = int(row_idx) + 1
-        window_start_idx = max(0, window_end_idx - args.rolling_window)
-        x_window = features_df.iloc[window_start_idx:window_end_idx][FEATURE_COLUMNS].to_numpy()
+    if inference_mode == "walk_forward":
+        for offset, row_idx in enumerate(target_indices, start=1):
+            window_end_idx = int(row_idx) + 1
+            window_start_idx = max(0, window_end_idx - args.rolling_window)
+            x_window = features_df.iloc[window_start_idx:window_end_idx][FEATURE_COLUMNS].to_numpy()
 
-        pred_state = int(detector.predict(x_window)[-1])
-        all_states[row_idx] = pred_state
-        rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[window_start_idx]["timestamp"])
+            pred_state = int(detector.predict(x_window)[-1])
+            all_states[row_idx] = pred_state
+            rolling_window_start[row_idx] = pd.Timestamp(features_df.iloc[window_start_idx]["timestamp"])
 
-        _print_progress_line("[HMM Inference]", offset, len(target_indices), prediction_started)
+            _print_progress_line("[HMM Inference]", offset, len(target_indices), prediction_started)
+    else:
+        x_target = features_df.loc[mask, FEATURE_COLUMNS].to_numpy()
+        predicted_states = detector.predict(x_target)
+        all_states[target_indices] = predicted_states.astype(float)
+        for offset, row_idx in enumerate(target_indices, start=1):
+            _print_progress_line("[HMM Inference]", offset, len(target_indices), prediction_started)
 
     inferred = features_df.loc[mask].copy()
     inferred["hmm_state"] = all_states[mask.to_numpy()].astype(int)
     inferred["rolling_window_start"] = [rolling_window_start[i] for i in target_indices]
-    inferred["rolling_window_size"] = float(args.rolling_window)
-    inferred["inference_method"] = "walk_forward"
+    inferred["rolling_window_size"] = float(args.rolling_window if inference_mode == "walk_forward" else 1)
+    inferred["inference_method"] = inference_mode
 
     summary = summarize_states(inferred, state_col="hmm_state")
     mapping = infer_regime_mapping(summary, state_col="hmm_state")
@@ -163,7 +181,8 @@ def main() -> None:
                 output_path=run_dir / "hmm_inference_candlestick_regime.html",
                 title=f"HMM Inference {args.pair.upper()} {args.timeframe} - {start_ts.strftime('%Y-%m')}",
                 inference_note=(
-                    f"Custom detector={detector_path.name}; walk-forward window={args.rolling_window}"
+                    f"Custom detector={detector_path.name}; inference_mode={inference_mode}"
+                    + (f"; walk-forward window={args.rolling_window}" if inference_mode == "walk_forward" else "")
                 ),
             )
         )

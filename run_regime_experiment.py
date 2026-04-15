@@ -60,6 +60,15 @@ def parse_args() -> argparse.Namespace:
         help="Walk-forward step size. Must be 1 to avoid look-ahead.",
     )
     parser.add_argument(
+        "--inference-mode",
+        type=str,
+        default=None,
+        help=(
+            "Inference mode to use for state prediction: pointwise or walk_forward. "
+            "If omitted, the pipeline uses model-aware defaults."
+        ),
+    )
+    parser.add_argument(
         "--load-models-from",
         type=str,
         default=None,
@@ -161,6 +170,7 @@ def main() -> None:
         chart_include_train=args.chart_full_range,
         test_rolling_window=args.rolling_window,
         test_prediction_step=args.rolling_step,
+        inference_mode=args.inference_mode,
     )
     print(f"Experiment completed. Artifacts saved to: {run_dir}")
 

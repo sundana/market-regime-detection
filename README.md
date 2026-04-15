@@ -122,6 +122,13 @@ Optional: walk-forward inference on test set (hour-by-hour):
 python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --train-ratio 0.7 --rolling-window 120 --rolling-step 1
 ```
 
+Explicit inference mode selection:
+
+```bash
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --models hmm --inference-mode pointwise
+python run_regime_experiment.py --pair xauusd --timeframe 1h --max-bars 3000 --models hmm --inference-mode walk_forward --rolling-window 120
+```
+
 ## Output Artifacts
 
 Each run writes to:
@@ -157,6 +164,7 @@ Composite model ranking is saved in `leaderboard.csv` via `composite_score`.
 - HMM auto-tuning uses an internal time-based split inside training data to choose the best HMM configuration before final test evaluation.
 - `--load-models-from` expects detector files (`*_detector.pkl`) inside each model subfolder and skips model fitting. `hmm`, `gmm`, and `kmeans` are required; `hmm_gmm` is loaded when available.
 - `--models` can be used to run only selected detectors (e.g., `--models hmm,gmm`). Allowed values: `hmm`, `hmm_gmm`, `gmm`, `kmeans`, or `all`.
+- `--inference-mode` can override the default inference behavior for supported models. Allowed values: `pointwise` and `walk_forward`. If omitted, the pipeline keeps the model-aware default (`hmm`/`hmm_gmm` = walk-forward, `gmm`/`kmeans` = pointwise).
 - Runtime logs now include stage-based progress + ETA for data preparation, HMM tuning, and model training/evaluation.
 - Stage 4 now prints per-model substeps so long operations (especially chart rendering) remain visible in terminal output.
 - Test inference uses model-aware behavior: HMM uses walk-forward context (`--rolling-window`), while GMM/KMeans are point-wise (non-sequential), so rolling-window does not change their predictions.

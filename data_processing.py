@@ -19,5 +19,6 @@ def calculate_ohlcv(df: pd.DataFrame, freq='1h') -> pd.DataFrame:
     ohlcv['volume'] = volume
 
     ohlcv.reset_index(inplace=True)
+    print(f"Total candles: {len(ohlcv)}")
 
     return ohlcv

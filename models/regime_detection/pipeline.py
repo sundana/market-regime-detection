@@ -18,6 +18,7 @@ from .visualization import plot_candlestick_with_regimes
 
 MODEL_ORDER: tuple[str, ...] = ("hmm", "hmm_gmm", "gmm", "kmeans")
 DEFAULT_PRETRAINED_REQUIRED_MODELS: tuple[str, ...] = ("hmm", "gmm", "kmeans")
+INFERENCE_MODE_VALUES: tuple[str, ...] = ("pointwise", "walk_forward")
 
 
 def _resolve_selected_models(selected_models: list[str] | None) -> list[str]:
@@ -40,6 +41,20 @@ def _resolve_selected_models(selected_models: list[str] | None) -> list[str]:
 
     selected_set = set(cleaned)
     return [model_name for model_name in MODEL_ORDER if model_name in selected_set]
+
+
+def _resolve_inference_mode(model_name: str, inference_mode: str | None) -> str:
+    if inference_mode is None:
+        return "walk_forward" if model_name in {"hmm", "hmm_gmm"} else "pointwise"
+
+    mode = str(inference_mode).strip().lower()
+    if mode not in INFERENCE_MODE_VALUES:
+        raise ValueError(f"inference_mode must be one of: {', '.join(INFERENCE_MODE_VALUES)}")
+
+    if mode == "walk_forward" and model_name not in {"hmm", "hmm_gmm"}:
+        raise ValueError("walk_forward inference is only supported for hmm and hmm_gmm")
+
+    return mode
 
 
 def _format_duration(seconds: float) -> str:
@@ -152,7 +167,7 @@ def _extract_convergence_info(model_name: str, detector: BaseDetector) -> dict[s
         f"{prefix}_convergence_status": "unknown",
         f"{prefix}_convergence_warning": "",
         f"{prefix}_converged": None,
-        f"{prefix}_n_iter": None,
+        f"{prefix}_fit_n_iter": None,
         f"{prefix}_max_iter": None,
         f"{prefix}_hit_max_iter": None,
     }
@@ -195,7 +210,7 @@ def _extract_convergence_info(model_name: str, detector: BaseDetector) -> dict[s
         return info
 
     info[f"{prefix}_converged"] = converged
-    info[f"{prefix}_n_iter"] = n_iter
+    info[f"{prefix}_fit_n_iter"] = n_iter
     info[f"{prefix}_max_iter"] = max_iter
     info[f"{prefix}_hit_max_iter"] = hit_max_iter
     info[f"{prefix}_convergence_warning"] = warning_msg
@@ -206,7 +221,7 @@ def _extract_convergence_info(model_name: str, detector: BaseDetector) -> dict[s
 def _print_convergence_log(model_name: str, convergence_info: dict[str, Any]) -> None:
     prefix = model_name.lower()
     converged = convergence_info.get(f"{prefix}_converged")
-    n_iter = convergence_info.get(f"{prefix}_n_iter")
+    n_iter = convergence_info.get(f"{prefix}_fit_n_iter")
     max_iter = convergence_info.get(f"{prefix}_max_iter")
     status = convergence_info.get(f"{prefix}_convergence_status", "unknown")
     warning_msg = str(convergence_info.get(f"{prefix}_convergence_warning", "") or "")
@@ -493,6 +508,7 @@ def _run_single_model(
     chart_include_train: bool,
     test_rolling_window: int,
     test_prediction_step: int,
+    inference_mode: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     model_started = time.perf_counter()
     print(f"[Stage 4/4] -> {model_name.upper()}: preparing inputs...")
@@ -513,7 +529,8 @@ def _run_single_model(
     training_info = _extract_training_diagnostics(model_name=model_name, detector=detector, x_train=x_train)
     _print_training_diagnostics_log(model_name=model_name, training_info=training_info)
 
-    uses_rolling_context = model_name in {"hmm", "hmm_gmm"}
+    effective_inference_mode = _resolve_inference_mode(model_name, inference_mode)
+    uses_rolling_context = effective_inference_mode == "walk_forward"
     if uses_rolling_context:
         print(
             f"[Stage 4/4] -> {model_name.upper()}: predicting states "
@@ -565,7 +582,7 @@ def _run_single_model(
     predicted_df[state_col] = all_states
     predicted_df["rolling_window_start"] = rolling_window_start
     predicted_df["rolling_window_size"] = float(test_rolling_window if uses_rolling_context else 1)
-    predicted_df["inference_method"] = "walk_forward" if uses_rolling_context else "pointwise"
+    predicted_df["inference_method"] = effective_inference_mode
 
     predicted_df, summary = _apply_labels_and_summary(
         predicted_df=predicted_df,
@@ -591,7 +608,7 @@ def _run_single_model(
 
     if generate_chart:
         print(f"[Stage 4/4] -> {model_name.upper()}: rendering candlestick HTML chart...")
-        chart_df = predicted_df if chart_include_train else test_labeled
+        chart_df = predicted_df if (chart_include_train or uses_rolling_context) else test_labeled
         split_ts: pd.Timestamp | None = None
         if chart_include_train and 0 < train_idx < len(predicted_df):
             split_ts = pd.Timestamp(predicted_df.iloc[train_idx]["timestamp"])
@@ -646,13 +663,25 @@ def run_experiment(
     chart_include_train: bool = False,
     test_rolling_window: int = 120,
     test_prediction_step: int = 1,
+    inference_mode: str | None = None,
 ) -> Path:
     selected_models = _resolve_selected_models(selected_models)
 
-    if test_rolling_window < 2:
-        raise ValueError("test_rolling_window must be >= 2")
-    if test_prediction_step != 1:
-        raise ValueError("Walk-forward inference requires test_prediction_step=1")
+    if inference_mode is not None:
+        inference_mode = str(inference_mode).strip().lower()
+        if inference_mode not in INFERENCE_MODE_VALUES:
+            raise ValueError(f"inference_mode must be one of: {', '.join(INFERENCE_MODE_VALUES)}")
+
+    effective_modes = {
+        model_name: _resolve_inference_mode(model_name, inference_mode)
+        for model_name in selected_models
+    }
+
+    if any(mode == "walk_forward" for mode in effective_modes.values()):
+        if test_rolling_window < 2:
+            raise ValueError("test_rolling_window must be >= 2 when walk_forward inference is used")
+        if test_prediction_step != 1:
+            raise ValueError("Walk-forward inference requires test_prediction_step=1")
     if hmm_gmm_n_mix < 1:
         raise ValueError("hmm_gmm_n_mix must be >= 1")
     if hmm_gmm_n_iter < 1:
@@ -755,6 +784,7 @@ def run_experiment(
             chart_include_train=chart_include_train,
             test_rolling_window=test_rolling_window,
             test_prediction_step=test_prediction_step,
+            inference_mode=inference_mode,
         )
         all_metrics[name] = model_metrics
         convergence_summary.update(model_convergence)
@@ -780,7 +810,7 @@ def run_experiment(
             "save_trained_models": save_trained_models,
             "generate_charts": generate_charts,
             "chart_include_train": chart_include_train,
-            "test_prediction_mode": "walk_forward",
+            "test_prediction_mode": inference_mode or "auto",
             "test_rolling_window": test_rolling_window,
             "test_prediction_step": test_prediction_step,
             "selected_models": "|".join(selected_models),
