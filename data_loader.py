@@ -1,6 +1,6 @@
 import os
 import time
-import pandas as pd
+import polars as pl
 
 
 
@@ -15,7 +15,9 @@ def load_tick_data(data_path):
         print(f"[Data Load] {idx}/{total_years} - Reading year {year}...")
         source_dir = os.path.join(data_path, f"{year}_combined.parquet")
         if os.path.exists(source_dir):
-            data_dict[year] = pd.read_parquet(source_dir)
+            df = pl.read_parquet(source_dir)
+            df = df.rename(dict(zip(df.columns, ['timestamp', 'bid', 'ask'])))
+            data_dict[year] = df
             print(f"Loaded {year}: {data_dict[year].shape[0]:,} rows")
         else:
             print(f"Failed to load {year}: File not found at {data_path}")
@@ -32,13 +34,16 @@ def preprocess_tick_data(data_ticks: dict):
     processed_ticks = {}
     total = len(data_ticks)
     for idx, (year, df) in enumerate(data_ticks.items(), start=1):
-        df.columns = ['timestamp', 'bid', 'ask']
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df['bid'] = pd.to_numeric(df['bid'])
-        df['ask'] = pd.to_numeric(df['ask'])
-
-        df.sort_values('timestamp', inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        df = df.with_columns([
+            pl.col('timestamp').str.to_datetime(
+                format="%Y-%m-%d %H:%M:%S%.3f",
+                strict=False
+            ),
+            pl.col('bid').cast(pl.Float64, strict=False),
+            pl.col('ask').cast(pl.Float64, strict=False)
+        ])
+        df = df.drop_nulls(subset=['timestamp', 'bid', 'ask'])
+        df = df.sort('timestamp')
         
         print(f"[Preprocess] {idx}/{total} year={year} selesai")
         processed_ticks[year] = df

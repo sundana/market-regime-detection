@@ -1,24 +1,32 @@
-import numpy as np
-import pandas as pd
+import polars as pl
 
 
-def calculate_ohlcv(df: pd.DataFrame, freq='1h') -> pd.DataFrame:
-    """Resample ticks to OHLCV."""
-    df_copy = df.copy()
-    df_copy['mid_price'] = (df_copy['bid'] + df_copy['ask']) / 2
-    df_copy.set_index('timestamp', inplace=True)
+def calculate_ohlcv(df: pl.DataFrame, freq: str = '1h') -> pl.DataFrame:
+    """Aggregate tick data to OHLCV candles using Polars dynamic grouping."""
+    df_copy = (
+        df
+        .with_columns([
+            pl.col('timestamp').cast(pl.Datetime, strict=False),
+            ((pl.col('bid') + pl.col('ask')) / 2).alias('mid_price'),
+        ])
+        .drop_nulls(subset=['timestamp', 'mid_price'])
+        .sort('timestamp')
+    )
 
-    ohlcv = df_copy['mid_price'].resample(freq).ohlc().rename(columns={
-        'open': 'open_price',
-        'high': 'high_price',
-        'low': 'low_price',
-        'close': 'close_price'
-    })
+    ohlcv = (
+        df_copy
+        .group_by_dynamic('timestamp', every=freq, period=freq, closed='left', label='left')
+        .agg([
+            pl.col('mid_price').first().alias('open_price'),
+            pl.col('mid_price').max().alias('high_price'),
+            pl.col('mid_price').min().alias('low_price'),
+            pl.col('mid_price').last().alias('close_price'),
+            pl.len().alias('volume'),
+        ])
+        .drop_nulls(subset=['open_price', 'high_price', 'low_price', 'close_price'])
+        .sort('timestamp')
+    )
 
-    volume = df_copy.groupby(pd.Grouper(freq=freq)).size()
-    ohlcv['volume'] = volume
-
-    ohlcv.reset_index(inplace=True)
-    print(f"Total candles: {len(ohlcv)}")
+    print(f"Total candles: {ohlcv.height}")
 
     return ohlcv

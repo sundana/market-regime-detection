@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
+import sys
 
-import numpy as np
-import pandas as pd
+import polars as pl
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_loader import load_tick_data, preprocess_tick_data
 from data_processing import calculate_ohlcv
@@ -31,64 +36,95 @@ FEATURE_COLUMNS = [
 ]
 
 
-def _load_ticks_for_feature_build(pair_path: Path) -> dict[int, pd.DataFrame]:
+def _load_ticks_for_feature_build(pair_path: Path) -> dict[int, pl.DataFrame]:
     yearly = load_tick_data(str(pair_path))
     return preprocess_tick_data(yearly)
 
 
-def combine_yearly_ticks(data_ticks: dict[int, pd.DataFrame]) -> pd.DataFrame:
+def combine_yearly_ticks(data_ticks: dict[int, pl.DataFrame]) -> pl.DataFrame:
     if not data_ticks:
         raise ValueError("No yearly tick data available. Check pair path and parquet files.")
 
-    combined = pd.concat(data_ticks.values(), ignore_index=True)
-    combined = combined.sort_values("timestamp").reset_index(drop=True)
+    yearly_frames = [frame for _, frame in sorted(data_ticks.items())]
+    combined = pl.concat(yearly_frames, how="vertical_relaxed")
+    combined = combined.with_columns(
+        pl.col("timestamp").cast(pl.Datetime, strict=False)
+    ).drop_nulls(subset=["timestamp"])
+    combined = combined.sort("timestamp")
     return combined
 
 
-def add_regime_features(ohlcv_df: pd.DataFrame, return_lag: int = 1) -> pd.DataFrame:
+def add_regime_features(ohlcv_df: pl.DataFrame, return_lag: int = 1) -> pl.DataFrame:
     if return_lag < 1:
         raise ValueError("return_lag must be >= 1")
 
-    df = ohlcv_df.copy()
-    df = df.dropna(subset=["open_price", "high_price", "low_price", "close_price"]).reset_index(drop=True)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = (
+        ohlcv_df
+        .drop_nulls(subset=["open_price", "high_price", "low_price", "close_price"])
+        .with_columns(pl.col("timestamp").cast(pl.Datetime, strict=False))
+        .drop_nulls(subset=["timestamp"])
+        .sort("timestamp")
+    )
 
-    df["return_1"] = np.log(df["close_price"] / df["close_price"].shift(return_lag))
-    df["return_ema_5"] = df["return_1"].ewm(span=5, adjust=False).mean()
-    # Rolling deviation of returns over the latest 14 candles.
-    df["rolling_dev_return_14"] = df["return_1"].rolling(14).std()
-    df["volatility_24"] = df["return_1"].rolling(24).std()
-    df["volatility_72"] = df["return_1"].rolling(72).std()
-    df["rolling_dev_return_14_smooth"] = df["return_ema_5"].rolling(14).std()
-    df["volatility_24_smooth"] = df["return_ema_5"].rolling(24).std()
-    df["volatility_72_smooth"] = df["return_ema_5"].rolling(72).std()
+    df = df.with_columns(
+        (pl.col("close_price") / pl.col("close_price").shift(return_lag)).log().alias("return_1")
+    )
 
-    # VIX: Garman-Klass volatility over 30-period rolling window
-    df["hl_ratio"] = np.log(df["high_price"] / df["low_price"])
-    df["co_ratio"] = np.log(df["close_price"] / df["open_price"])
-    df["gk_volatility"] = (0.5 * (df["hl_ratio"] ** 2) - (2 * np.log(2) - 1) * (df["co_ratio"] ** 2)).rolling(30).mean() ** 0.5
-    df["vix"] = df["gk_volatility"]
+    df = df.with_columns([
+        pl.col("return_1").ewm_mean(span=5, adjust=False).alias("return_ema_5"),
+        pl.col("return_1").rolling_std(window_size=14).alias("rolling_dev_return_14"),
+        pl.col("return_1").rolling_std(window_size=24).alias("volatility_24"),
+        pl.col("return_1").rolling_std(window_size=72).alias("volatility_72"),
+    ])
 
-    prev_close = df["close_price"].shift(1)
-    true_range = pd.concat(
-        [
-            df["high_price"] - df["low_price"],
-            (df["high_price"] - prev_close).abs(),
-            (df["low_price"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    df["atr_14"] = true_range.rolling(14).mean()
-    df["atr_14_smooth"] = df["atr_14"].ewm(span=5, adjust=False).mean()
+    df = df.with_columns([
+        pl.col("return_ema_5").rolling_std(window_size=14).alias("rolling_dev_return_14_smooth"),
+        pl.col("return_ema_5").rolling_std(window_size=24).alias("volatility_24_smooth"),
+        pl.col("return_ema_5").rolling_std(window_size=72).alias("volatility_72_smooth"),
+    ])
 
-    close_safe = df["close_price"].replace(0, np.nan)
-    open_safe = df["open_price"].replace(0, np.nan)
+    # VIX: Garman-Klass volatility over 30-period rolling window.
+    df = df.with_columns([
+        (pl.col("high_price") / pl.col("low_price")).log().alias("hl_ratio"),
+        (pl.col("close_price") / pl.col("open_price")).log().alias("co_ratio"),
+    ])
 
-    df["range_ratio"] = (df["high_price"] - df["low_price"]) / close_safe
-    df["body_ratio"] = (df["close_price"] - df["open_price"]) / open_safe
-    df["volume_change"] = np.log((df["volume"] + 1) / (df["volume"].shift(1) + 1))
+    gk_core = (
+        pl.lit(0.5) * pl.col("hl_ratio").pow(2)
+        - pl.lit(2 * math.log(2) - 1) * pl.col("co_ratio").pow(2)
+    )
+    df = df.with_columns(
+        gk_core.rolling_mean(window_size=30).pow(0.5).alias("gk_volatility")
+    ).with_columns(
+        pl.col("gk_volatility").alias("vix")
+    )
 
-    clean = df.dropna(subset=BASE_OHLCV_COLUMNS + FEATURE_COLUMNS).reset_index(drop=True)
+    prev_close = pl.col("close_price").shift(1)
+    df = df.with_columns(
+        pl.max_horizontal(
+            pl.col("high_price") - pl.col("low_price"),
+            (pl.col("high_price") - prev_close).abs(),
+            (pl.col("low_price") - prev_close).abs(),
+        ).alias("true_range")
+    )
+
+    df = df.with_columns(
+        pl.col("true_range").rolling_mean(window_size=14).alias("atr_14")
+    )
+    df = df.with_columns(
+        pl.col("atr_14").ewm_mean(span=5, adjust=False).alias("atr_14_smooth")
+    )
+
+    close_safe = pl.when(pl.col("close_price") == 0).then(None).otherwise(pl.col("close_price"))
+    open_safe = pl.when(pl.col("open_price") == 0).then(None).otherwise(pl.col("open_price"))
+
+    df = df.with_columns([
+        ((pl.col("high_price") - pl.col("low_price")) / close_safe).alias("range_ratio"),
+        ((pl.col("close_price") - pl.col("open_price")) / open_safe).alias("body_ratio"),
+        (((pl.col("volume") + 1) / (pl.col("volume").shift(1) + 1)).log()).alias("volume_change"),
+    ])
+
+    clean = df.drop_nulls(subset=BASE_OHLCV_COLUMNS + FEATURE_COLUMNS)
     return clean
 
 
@@ -98,7 +134,7 @@ def build_feature_table(
     timeframe: str = "1h",
     return_lag: int = 1,
     max_bars: int | None = None,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     pair_path = Path(data_root) / pair
     preprocessed = _load_ticks_for_feature_build(pair_path)
     ticks = combine_yearly_ticks(preprocessed)
@@ -107,9 +143,16 @@ def build_feature_table(
     features = add_regime_features(ohlcv, return_lag=return_lag)
 
     if max_bars is not None:
-        features = features.tail(max_bars).reset_index(drop=True)
+        features = features.tail(max_bars)
 
-    if features.empty:
+    if features.is_empty():
         raise ValueError("Feature table is empty after preprocessing.")
 
     return features
+
+
+
+
+if __name__ == "__main__":
+    x = build_feature_table('data', max_bars=200)
+    print(x)

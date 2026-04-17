@@ -718,7 +718,14 @@ def run_experiment(
     run_dir = Path(output_root) / "regime_detection" / f"{pair}_{timeframe}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    features_df.to_csv(run_dir / "feature_table.csv", index=False)
+    if hasattr(features_df, "write_csv"):
+        # build_feature_table may return a Polars DataFrame.
+        features_df.write_csv(run_dir / "feature_table.csv")
+        if hasattr(features_df, "to_pandas"):
+            # Keep the rest of the pipeline stable until it is fully Polars-native.
+            features_df = features_df.to_pandas()
+    else:
+        features_df.to_csv(run_dir / "feature_table.csv", index=False)
 
     all_metrics: dict[str, dict[str, Any]] = {}
     convergence_summary: dict[str, Any] = {}
