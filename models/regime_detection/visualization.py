@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 DEFAULT_COLORS = {
     "Bullish": "rgba(46, 125, 50, 0.25)",
     "Bearish": "rgba(229, 57, 53, 0.25)",
+    "Sideway": "rgba(158, 158, 158, 0.20)",
     "Sideways": "rgba(158, 158, 158, 0.20)",
     "Volatile": "rgba(251, 140, 0, 0.22)",
     "Unknown": "rgba(120, 120, 120, 0.18)",

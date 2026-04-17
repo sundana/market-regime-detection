@@ -20,11 +20,11 @@ BASE_OHLCV_COLUMNS = [
 
 
 FEATURE_COLUMNS = [
-    "return_1",
-    "rolling_dev_return_14",
-    "volatility_24",
-    "volatility_72",
-    "vix",
+    "return_ema_5",
+    "rolling_dev_return_14_smooth",
+    "volatility_24_smooth",
+    "volatility_72_smooth",
+    "atr_14_smooth",
     "range_ratio",
     "body_ratio",
     "volume_change",
@@ -54,16 +54,32 @@ def add_regime_features(ohlcv_df: pd.DataFrame, return_lag: int = 1) -> pd.DataF
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
     df["return_1"] = np.log(df["close_price"] / df["close_price"].shift(return_lag))
+    df["return_ema_5"] = df["return_1"].ewm(span=5, adjust=False).mean()
     # Rolling deviation of returns over the latest 14 candles.
     df["rolling_dev_return_14"] = df["return_1"].rolling(14).std()
     df["volatility_24"] = df["return_1"].rolling(24).std()
     df["volatility_72"] = df["return_1"].rolling(72).std()
+    df["rolling_dev_return_14_smooth"] = df["return_ema_5"].rolling(14).std()
+    df["volatility_24_smooth"] = df["return_ema_5"].rolling(24).std()
+    df["volatility_72_smooth"] = df["return_ema_5"].rolling(72).std()
 
     # VIX: Garman-Klass volatility over 30-period rolling window
     df["hl_ratio"] = np.log(df["high_price"] / df["low_price"])
     df["co_ratio"] = np.log(df["close_price"] / df["open_price"])
     df["gk_volatility"] = (0.5 * (df["hl_ratio"] ** 2) - (2 * np.log(2) - 1) * (df["co_ratio"] ** 2)).rolling(30).mean() ** 0.5
     df["vix"] = df["gk_volatility"]
+
+    prev_close = df["close_price"].shift(1)
+    true_range = pd.concat(
+        [
+            df["high_price"] - df["low_price"],
+            (df["high_price"] - prev_close).abs(),
+            (df["low_price"] - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    df["atr_14"] = true_range.rolling(14).mean()
+    df["atr_14_smooth"] = df["atr_14"].ewm(span=5, adjust=False).mean()
 
     close_safe = df["close_price"].replace(0, np.nan)
     open_safe = df["open_price"].replace(0, np.nan)
