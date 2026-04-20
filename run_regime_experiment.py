@@ -89,6 +89,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Render chart on full train+test range and mark train/test split.",
     )
+    parser.add_argument(
+        "--chart-max-bars",
+        type=int,
+        default=3000,
+        help=(
+            "Maximum number of bars rendered in HTML chart (for speed). "
+            "Use 0 to disable trimming."
+        ),
+    )
 
     parser.add_argument("--hmm-auto-tune", action="store_true", help="Enable auto-tuning for HMM.")
     parser.add_argument(
@@ -168,6 +177,7 @@ def main() -> None:
         save_trained_models=not args.no_save_models,
         generate_charts=not args.no_charts,
         chart_include_train=args.chart_full_range,
+        chart_max_bars=None if args.chart_max_bars <= 0 else args.chart_max_bars,
         test_rolling_window=args.rolling_window,
         test_prediction_step=args.rolling_step,
         inference_mode=args.inference_mode,

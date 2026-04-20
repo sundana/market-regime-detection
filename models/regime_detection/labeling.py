@@ -7,7 +7,7 @@ def summarize_states(
     df: pd.DataFrame,
     state_col: str,
     return_col: str = "return_1",
-    vol_col: str = "volatility_24",
+    vol_col: str = "atr_14_normalized",
 ) -> pd.DataFrame:
     summary = (
         df.groupby(state_col)

@@ -11,7 +11,7 @@ import pandas as pd
 
 from .detectors import BaseDetector, GMMDetector, HMMDetector, HMMGMMDetector, KMeansDetector
 from .evaluation import add_composite_score, evaluate_model, split_train_test
-from .features import FEATURE_COLUMNS, build_feature_table
+from .features import BASE_OHLCV_COLUMNS, FEATURE_COLUMNS, build_feature_table
 from .labeling import apply_regime_labels, infer_regime_mapping, summarize_states
 from .visualization import plot_candlestick_with_regimes
 
@@ -92,6 +92,11 @@ def _print_progress_line(prefix: str, current: int, total: int, started_at: floa
     )
     if current >= total:
         print("")
+
+
+def _select_existing_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    existing_columns = [col for col in columns if col in df.columns]
+    return df[existing_columns].copy()
 
 
 def _build_detectors(
@@ -506,6 +511,7 @@ def _run_single_model(
     save_detector_artifact: bool,
     generate_chart: bool,
     chart_include_train: bool,
+    chart_max_bars: int | None,
     test_rolling_window: int,
     test_prediction_step: int,
     inference_mode: str | None,
@@ -600,7 +606,15 @@ def _run_single_model(
         detector.save(_detector_artifact_path(run_dir, model_name))
 
     print(f"[Stage 4/4] -> {model_name.upper()}: writing labels and state summary...")
-    predicted_df.to_csv(model_dir / f"{model_name}_labels.csv", index=False)
+    label_export_columns = BASE_OHLCV_COLUMNS + FEATURE_COLUMNS + [
+        state_col,
+        "rolling_window_start",
+        "rolling_window_size",
+        "inference_method",
+        label_col,
+    ]
+    labels_export_df = _select_existing_columns(predicted_df, label_export_columns)
+    labels_export_df.to_csv(model_dir / f"{model_name}_labels.csv", index=False)
 
     summary.to_csv(model_dir / f"{model_name}_state_summary.csv", index=False)
 
@@ -609,6 +623,8 @@ def _run_single_model(
     if generate_chart:
         print(f"[Stage 4/4] -> {model_name.upper()}: rendering candlestick HTML chart...")
         chart_df = predicted_df if (chart_include_train or uses_rolling_context) else test_labeled
+        if chart_max_bars is not None and chart_max_bars > 0 and len(chart_df) > chart_max_bars:
+            chart_df = chart_df.tail(chart_max_bars).copy()
         split_ts: pd.Timestamp | None = None
         if chart_include_train and 0 < train_idx < len(predicted_df):
             split_ts = pd.Timestamp(predicted_df.iloc[train_idx]["timestamp"])
@@ -661,6 +677,7 @@ def run_experiment(
     save_trained_models: bool = True,
     generate_charts: bool = True,
     chart_include_train: bool = False,
+    chart_max_bars: int | None = 3000,
     test_rolling_window: int = 120,
     test_prediction_step: int = 1,
     inference_mode: str | None = None,
@@ -718,14 +735,16 @@ def run_experiment(
     run_dir = Path(output_root) / "regime_detection" / f"{pair}_{timeframe}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    if hasattr(features_df, "write_csv"):
-        # build_feature_table may return a Polars DataFrame.
-        features_df.write_csv(run_dir / "feature_table.csv")
+    if not isinstance(features_df, pd.DataFrame):
         if hasattr(features_df, "to_pandas"):
             # Keep the rest of the pipeline stable until it is fully Polars-native.
             features_df = features_df.to_pandas()
-    else:
-        features_df.to_csv(run_dir / "feature_table.csv", index=False)
+        else:
+            raise TypeError("features_df must be pandas DataFrame or support to_pandas().")
+
+    feature_export_columns = BASE_OHLCV_COLUMNS + FEATURE_COLUMNS
+    features_export_df = _select_existing_columns(features_df, feature_export_columns)
+    features_export_df.to_csv(run_dir / "feature_table.csv", index=False)
 
     all_metrics: dict[str, dict[str, Any]] = {}
     convergence_summary: dict[str, Any] = {}
@@ -789,6 +808,7 @@ def run_experiment(
             save_detector_artifact=save_trained_models and not pretrained_mode,
             generate_chart=generate_charts,
             chart_include_train=chart_include_train,
+            chart_max_bars=chart_max_bars,
             test_rolling_window=test_rolling_window,
             test_prediction_step=test_prediction_step,
             inference_mode=inference_mode,

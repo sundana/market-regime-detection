@@ -88,7 +88,7 @@ def compute_economic_validity(
     df: Any,
     state_col: str,
     return_col: str = "return_1",
-    vol_col: str = "volatility_24",
+    vol_col: str = "atr_14_normalized",
 ) -> dict[str, float]:
     df_pl = _to_polars_df(df)
 
@@ -157,7 +157,7 @@ def evaluate_model(
     state_col: str,
     label_col: str = "regime",
     return_col: str = "return_1",
-    vol_col: str = "volatility_24",
+    vol_col: str = "atr_14_normalized",
 ) -> dict[str, float]:
     df_pl = _to_polars_df(df)
 
@@ -230,7 +230,7 @@ def run_single_evaluation_smoke_test() -> None:
                 "2026-01-01 05:00:00",
             ],
             "return_1": [0.0010, 0.0014, -0.0008, 0.0021, -0.0012, 0.0007],
-            "volatility_24": [0.0020, 0.0025, 0.0030, 0.0033, 0.0022, 0.0028],
+            "atr_14_normalized": [0.0020, 0.0025, 0.0030, 0.0033, 0.0022, 0.0028],
             "hmm_state": [0, 0, 1, 1, 2, 2],
             "hmm_regime": ["Bullish", "Bullish", "Neutral", "Neutral", "Bearish", "Bearish"],
         }
@@ -243,7 +243,7 @@ def run_single_evaluation_smoke_test() -> None:
         state_col="hmm_state",
         label_col="hmm_regime",
         return_col="return_1",
-        vol_col="volatility_24",
+        vol_col="atr_14_normalized",
     )
 
     required_keys = {
